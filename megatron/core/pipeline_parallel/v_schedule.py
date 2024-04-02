@@ -44,7 +44,7 @@ class PipelineGraph(object):
             micro
 
     def try_v_schedule(self, fill_f=True, fill_b=True, approved_bubble=None):
-        # 初始化计数器count,对于每个阶段都有6个计数器(对应F/B/W,每个有两个chunk)
+        # 初始化计数器count,对于每个stage都有6个计数器(对应F/B/W,每个有两个chunk)
         count = []
         for i in range(self.n_stage):
             count.append([0] * 6)
@@ -55,9 +55,9 @@ class PipelineGraph(object):
         cur_time = [0] * self.n_stage
         # 初始化内存占用mem为全0
         mem = [0] * self.n_stage
-        # 初始化每个阶段的泡沫时间为全0
+        # 初始化每个stage的泡沫时间为全0
         stage_bubble = [0] * self.n_stage
-        # 初始化待处理的W任务队列pending_w,每个阶段一个
+        # 初始化待处理的W任务队列pending_w,每个stage一个
         pending_w = [deque() for _ in range(self.n_stage)]
         # 初始化调度方案schedule为n_stage个空列表
         schedule = [[] for _ in range(self.n_stage)]
@@ -70,7 +70,7 @@ class PipelineGraph(object):
         # 计算approved_bubble中的最大值
         max_approved_bubble = max(approved_bubble)
 
-        # 定义获取最大阶段泡沫时间的函数
+        # 定义获取最大stage泡沫时间的函数
         def get_max_stage_bubble(stage=-1):
             max_stage_bubble = 0
             for bb in stage_bubble:
@@ -92,7 +92,7 @@ class PipelineGraph(object):
             """
             @param cat: 任务类型,0为F,1为B,2为W
             @param chunk: 任务块,0为chunk 0,1为chunk 1
-            @param stage: 阶段编号
+            @param stage: stage编号
             @param assert_cnt: 是否检查计数器
             """
             task_end_time = _no_bubble = cur_time[stage] + self.fbw_cost[cat]
@@ -128,42 +128,42 @@ class PipelineGraph(object):
             # 更新当前任务的结束时间 Note(Sonder): 这里也需要适配 vpp_degree > 2 的逻辑
             # ------------------------------------------------ 
             if chunk == 1 and cat < 2:
-                # 如果是反向传播的第二个chunk，需要等待下一个阶段相应的任务完成
+                # 如果是反向传播的第二个chunk，需要等待下一个stage相应的任务完成
                 if stage < self.n_stage - 1:
-                    # 获取下一个阶段的相应任务ID
+                    # 获取下一个stage的相应任务ID
                     _fa_id = self.get_id(cat, chunk, stage + 1, _cnt)
-                    # 确保下一个阶段的任务已完成
+                    # 确保下一个stage的任务已完成
                     assert end_time[_fa_id] >= 0
                     # 更新当前任务的预计结束时间，考虑通信成本和任务本身的执行时间
                     # self.c_cost 是通信成本
                     # self.fbw_cost[cat] 是任务本身的执行时间
                     task_end_time = max(task_end_time, end_time[_fa_id] + self.c_cost + self.fbw_cost[cat])
             if chunk == 0 and cat < 2:
-                # 如果是前向或反向传播的第一个chunk，需要等待前一个阶段相应的任务完成
+                # 如果是前向或反向传播的第一个chunk，需要等待前一个stage相应的任务完成
                 if stage > 0:
-                    # 获取前一个阶段的相应任务ID
+                    # 获取前一个stage的相应任务ID
                     _fa_id = self.get_id(cat, chunk, stage - 1, _cnt)
-                    # 确保前一个阶段的任务已完成
+                    # 确保前一个stage的任务已完成
                     assert end_time[_fa_id] >= 0, f"{cat}, {chunk}, {stage}, {_cnt}"
                     # 更新当前任务的预计结束时间，考虑通信成本和任务本身的执行时间
                     task_end_time = max(task_end_time, end_time[_fa_id] + self.c_cost + self.fbw_cost[cat])
             _id = self.get_id(cat, chunk, stage, _cnt)
             # 为当前任务生成唯一ID
             if count[stage][0] > 0:
-                # 如果在当前阶段已经有任务被安排，则计算阶段内的空闲时间（泡沫）
+                # 如果在当前stage已经有任务被安排，则计算stage内的空闲时间（泡沫）
                 stage_bubble[stage] += task_end_time - _no_bubble
             # 更新当前任务的结束时间
             end_time[_id] = task_end_time
-            # 更新当前阶段的时间，以反映新任务的安排
+            # 更新当前stage的时间，以反映新任务的安排
             cur_time[stage] = task_end_time
             # 更新内存使用情况
             mem[stage] += self.fbw_mem[cat]
-            # 将任务加入到当前阶段的调度计划中
+            # 将任务加入到当前stage的调度计划中
             schedule[stage].append((cat, chunk, _cnt))
             if cat == 1:
                 # 如果是反向传播任务，将对应的权重更新任务加入待处理队列
                 pending_w[stage].append((2, chunk, _cnt))
-            # 更新当前阶段内指定类型和chunk的任务计数
+            # 更新当前stage内指定类型和chunk的任务计数
             count[stage][cat * 2 + chunk] += 1
 
         # ------------------------------------------------
@@ -209,7 +209,7 @@ class PipelineGraph(object):
         # 逐步插入B和W任务,尽量填充泡沫
         # ------------------------------------------------
         # Note(sonder): 为什么是 2 * self.n_micro?
-        # 因为每个阶段有两个 chunk，每个 chunk 最多有 n_micro 个任务
+        # 因为每个stage有两个 chunk，每个 chunk 最多有 n_micro 个任务
         # 这里后续需要适配 vpp_degree > 2 的逻辑，变成 vpp_degree * self.n_micro
         for _ in range(2 * self.n_micro):
             # 1. 检查内存,如果不够就先处理 pending_w 队列
@@ -220,7 +220,7 @@ class PipelineGraph(object):
             # Note(sonder): 这里默认也是 vpp_degree = 2，需要后续适配 vpp_degree > 2 的逻辑
             b0_ranks, b1_ranks = [], []
 
-            # 2. 根据条件分别将每个阶段插入b0或b1列表
+            # 2. 根据条件分别将每个stage插入b0或b1列表
             for i in range(self.n_stage):
                 # 如果 B 任务的 chunk 1 数量大于等于 chunk 0 数量,则插入 b0_ranks
                 if count[i][3] >= count[i][2]:
@@ -241,11 +241,11 @@ class PipelineGraph(object):
             # 3. 先插入b1_ranks中的B任务
             # Note(sonder): 这里是倒序插入，再结合图看一下为啥是倒序插入
             for i in reversed(b1_ranks):
-                b_ranks.append((i, 1)) # (阶段编号, chunk编号)
+                b_ranks.append((i, 1)) # (stage编号, chunk编号)
 
             # 4. 再插入b0_ranks中的B任务
             for i in b0_ranks:
-                b_ranks.append((i, 0)) # (阶段编号, chunk编号)
+                b_ranks.append((i, 0)) # (stage编号, chunk编号)
 
             # 5. 插入B任务,尽量填充泡沫
             # Note(sonder): 单卡视角下，一次只会插入一个 B 任务 b0/b1
@@ -386,28 +386,28 @@ class PipelineGraph(object):
         # 打印一些调度的统计信息
         print("%2d %3d, [%5d %5d %5d %5d], %6d -> %6.4f" %
               (self.n_stage, self.n_micro, *self.fbw_cost, self.c_cost, self.max_mem // self.f_mem, bubble_rate))
-        # 为每个阶段构建详细的执行顺序
+        # 为每个stage构建详细的执行顺序
         local_order = [[] for _ in range(self.n_stage)]
         # 通信ID字典和计数器，用于管理通信操作的唯一性
         comm_id = {}
         comm_id_counter = 0
         # 初始化后验证时间
         post_validation_time = 0
-        # 从最后一个阶段开始反向遍历每个阶段
+        # 从最后一个stage开始反向遍历每个stage
         for i in range(self.n_stage - 1, -1, -1):
             # 计算后验证ID
             pv_id = min(2 * (self.n_stage - 1 - i), self.n_micro - 1)
             # 更新后验证时间
             post_validation_time = max(post_validation_time, end_time[self.get_id(
                 0, 0, i, pv_id)] - self.fbw_cost[0] - self.c_cost)
-            # 遍历发送、接收和无操作，为每个阶段添加后验证节点
+            # 遍历发送、接收和无操作，为每个stage添加后验证节点
             for it in ["RECV_", "SEND_", ""]:
-                # 跳过特定阶段的不必要操作
+                # 跳过特定stage的不必要操作
                 if i == 0 and it == "SEND_":
                     continue
                 if i == self.n_stage - 1 and it == "RECV_":
                     continue
-                # 为当前阶段添加后验证节点
+                # 为当前stage添加后验证节点
                 stage_ = i
                 local_order[stage_].append(ScheduledNode(
                     type=it + "POST_VALIDATION",
@@ -420,7 +420,7 @@ class PipelineGraph(object):
                 # 更新通信ID
                 comm_id[local_order[stage_][-1]] = comm_id_counter
                 comm_id_counter += 1
-        # 遍历每个阶段，根据调度添加计算节点
+        # 遍历每个stage，根据调度添加计算节点
         for i in range(self.n_stage):
             for _cat_, _chunk_, _micro_ in schedule[i]:
                 # 计算完成时间
@@ -452,7 +452,7 @@ class PipelineGraph(object):
                         completion_time=complete_time,
                     ))
                     comm_id[local_order[stage_][-1]] = comm_id_counter
-                # 根据块的位置和阶段管理发送和接收操作
+                # 根据块的位置和stage管理发送和接收操作
                 if _chunk_ == 1 and i > 0:
                     communicate("SEND_", i)
                     communicate("RECV_", i - 1)
@@ -460,7 +460,7 @@ class PipelineGraph(object):
                     communicate("SEND_", i)
                     communicate("RECV_", i + 1)
                 comm_id_counter += 1
-        # 对每个阶段的节点进行排序，优先处理通信节点
+        # 对每个stage的节点进行排序，优先处理通信节点
         for rank in range(self.n_stage):
             def even_breaker(x: ScheduledNode):
                 # 计算节点总是延迟
